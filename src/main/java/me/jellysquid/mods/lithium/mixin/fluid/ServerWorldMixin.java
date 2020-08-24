@@ -86,7 +86,7 @@ public class ServerWorldMixin implements FireCachingWorld {
         }
 
         private static boolean isBitSet(long bits, int position) {
-            return ((bits) & (0x01 << position)) == 1;
+            return (bits & (1 << position)) != 0L;
         }
 
         private static int offsetKey(BlockPos unitOffset) {
