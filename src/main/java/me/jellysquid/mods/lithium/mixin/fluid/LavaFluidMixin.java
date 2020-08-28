@@ -43,10 +43,10 @@ public class LavaFluidMixin {
                         return;
                     }
 
-                    boolean isBlockAtOffsetBurnable = ((FireCachingWorld) world).isBlockAtOffsetBurnable(lavaPos, offsetPos);
+                    boolean canBurnBlock = ((FireCachingWorld) world).isBlockBurnable(offsetPos);
 
                     // either the block is burnable or it isn't cached
-                    if (isBlockAtOffsetBurnable) {
+                    if (canBurnBlock) {
 
                         int otherChunkX = offsetPos.getX() >> 4;
                         int otherChunkZ = offsetPos.getZ() >> 4;
@@ -55,7 +55,7 @@ public class LavaFluidMixin {
 
                         BlockState blockState = world.getBlockState(offsetPos);
 
-                        if (this.canLightFireLithium(world, lavaPos, offsetPos, blockState, sameChunk)) {
+                        if (this.canLightFireLithium(world, offsetPos, blockState, sameChunk)) {
                             world.setBlockState(offsetPos, AbstractFireBlock.getState(world, offsetPos));
                             return;
                         } else if (blockState.getMaterial().blocksMovement()) {
@@ -71,13 +71,13 @@ public class LavaFluidMixin {
                         return;
                     }
 
-                    boolean isBlockAtOffsetBurnable = ((FireCachingWorld) world).isBlockAtOffsetBurnable(lavaPos, offsetPos);
-                    if (isBlockAtOffsetBurnable) {
+                    boolean canBurnBlock = ((FireCachingWorld) world).isBlockBurnable(offsetPos);
+                    if (canBurnBlock) {
                         BlockPos up = offsetPos.up();
                         if (world.isAir(up) && this.hasBurnableBlock(world, offsetPos)) {
                             world.setBlockState(up, AbstractFireBlock.getState(world, offsetPos));
                         } else {
-                            ((FireCachingWorld) world).setLavaCannotBurnBlock(lavaPos, offsetPos);
+                            ((FireCachingWorld) world).setBlockCannotBurn(offsetPos);
                         }
                     }
                 }
@@ -86,7 +86,7 @@ public class LavaFluidMixin {
         }
     }
 
-    private boolean canLightFireLithium(World world, BlockPos lavaPos, BlockPos offsetPos, BlockState checkedState, boolean sameChunk) {
+    private boolean canLightFireLithium(World world, BlockPos offsetPos, BlockState checkedState, boolean sameChunk) {
         if (checkedState.isAir()) {
             Direction[] allDirections = Direction.values();
 
@@ -99,16 +99,11 @@ public class LavaFluidMixin {
             // only cache if the block is in the same chunk as the lava block
             if (sameChunk) {
                 // no directions have burnable blocks
-                ((FireCachingWorld) world).setLavaCannotBurnBlock(lavaPos, offsetPos);
+                ((FireCachingWorld) world).setBlockCannotBurn(offsetPos);
             }
         }
 
         return false;
-    }
-
-    @Shadow
-    private boolean canLightFire(WorldView world, BlockPos pos) {
-        throw new UnsupportedOperationException();
     }
 
     @Shadow

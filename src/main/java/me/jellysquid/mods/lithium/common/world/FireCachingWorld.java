@@ -3,7 +3,7 @@ package me.jellysquid.mods.lithium.common.world;
 import net.minecraft.util.math.BlockPos;
 
 public interface FireCachingWorld {
-    boolean isBlockAtOffsetBurnable(BlockPos lavaPos, BlockPos offsetPos);
+    boolean isBlockBurnable(BlockPos pos);
 
-    void setLavaCannotBurnBlock(BlockPos lavaPos, BlockPos offsetPos);
+    void setBlockCannotBurn(BlockPos pos);
 }

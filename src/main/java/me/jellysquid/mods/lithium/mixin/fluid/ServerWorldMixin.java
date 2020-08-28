@@ -4,6 +4,7 @@ import it.unimi.dsi.fastutil.HashCommon;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import me.jellysquid.mods.lithium.common.world.FireCachingWorld;
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
@@ -18,6 +19,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.Arrays;
+import java.util.BitSet;
+import java.util.Map;
 
 @Mixin(World.class)
 public class ServerWorldMixin implements FireCachingWorld {
@@ -26,22 +29,22 @@ public class ServerWorldMixin implements FireCachingWorld {
     @Final
     protected static Logger LOGGER;
 
-    private final Long2ObjectMap<Cache> burnableBlocksCache = new Long2ObjectOpenHashMap<>();
+    private final Map<Long, Cache2> burnableBlocksCache = new Long2ObjectOpenHashMap<>();
 
     @Override
-    public boolean isBlockAtOffsetBurnable(BlockPos lavaPos, BlockPos offsetPos) {
-        long chunkKey = ChunkPos.toLong(lavaPos.getX() >> 4, lavaPos.getZ() >> 4);
-        Cache cache = burnableBlocksCache.getOrDefault(chunkKey, new Cache(512));
+    public boolean isBlockBurnable(BlockPos pos) {
+        long chunkKey = ChunkPos.toLong(pos.getX() >> 4, pos.getZ() >> 4);
+        Cache2 cache = burnableBlocksCache.getOrDefault(chunkKey, new Cache2(512));
 
-        return cache.checkOffsetBurnable(lavaPos, offsetPos);
+        return cache.isPosBurnable(pos);
     }
 
     @Override
-    public void setLavaCannotBurnBlock(BlockPos lavaPos, BlockPos offsetPos) {
-        long chunkKey = ChunkPos.toLong(lavaPos.getX() >> 4, lavaPos.getZ() >> 4);
-        Cache cache = burnableBlocksCache.getOrDefault(chunkKey, new Cache(512));
+    public void setBlockCannotBurn(BlockPos pos) {
+        long chunkKey = ChunkPos.toLong(pos.getX() >> 4, pos.getZ() >> 4);
+        Cache2 cache = burnableBlocksCache.getOrDefault(chunkKey, new Cache2(512));
 
-        cache.setBlockNotBurnable(lavaPos, offsetPos);
+        cache.setBlockCannotBurn(pos);
 
         burnableBlocksCache.put(chunkKey, cache);
     }
@@ -49,92 +52,86 @@ public class ServerWorldMixin implements FireCachingWorld {
     @Inject(method = "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;II)Z", at = @At(value = "RETURN"))
     private void clearCache(BlockPos pos, BlockState state, int flags, int maxUpdateDepth, CallbackInfoReturnable<Boolean> cir) {
         if (cir.getReturnValue()) {
-            Cache cache = this.burnableBlocksCache.get(ChunkPos.toLong(pos.getX() >> 4, pos.getZ() >> 4));
+            Cache2 cache = this.burnableBlocksCache.get(ChunkPos.toLong(pos.getX() >> 4, pos.getZ() >> 4));
             if (cache != null) {
-                cache.clear();
+                cache.clearSection(pos.getY() >> 4);
             }
         }
     }
 
     @SuppressWarnings("MixinInnerClass")
-    private static class Cache {
-        private final int mask;
-        private final long[] keys;
-        private final long[] values;
+    private static class Cache2 {
+        private final short[] keys;
+        private final BitSet values;
 
-        Cache(int capacity) {
-            capacity = MathHelper.smallestEncompassingPowerOfTwo(capacity);
-            this.mask = capacity - 1;
+        private final int sectionSize;
+        private final int mask;
+
+
+        Cache2(int sectionSize) {
+            this.sectionSize = MathHelper.smallestEncompassingPowerOfTwo(sectionSize);
+            this.mask = sectionSize - 1;
 
             // Initialize default values
-            this.keys = new long[capacity];
-            Arrays.fill(this.keys, Long.MIN_VALUE);
-            this.values = new long[capacity];
+            this.keys = new short[16 * sectionSize];
+            Arrays.fill(this.keys, Short.MAX_VALUE);
+
+            this.values = new BitSet(16 * sectionSize);
+            this.values.set(0, 16 * sectionSize);
         }
 
-        // normalizes to x:0-4, y: 0-1, z: 0-4
-        private static BlockPos getUnitOffset(BlockPos lavaPos, BlockPos offset) {
-            return new BlockPos(
-                    (offset.getX() - lavaPos.getX()) + 2,
-                    offset.getY() - lavaPos.getY(),
-                    (offset.getZ() - lavaPos.getZ()) + 2
-            );
-        }
+        // if true then can (probably) burn; false - guaranteed can't burn
+        public boolean isPosBurnable(BlockPos pos) {
+            short key = getKey(pos);
+            int idx = HashCommon.mix(key) & this.mask;
 
-        private static int hash(long key) {
-            return (int) HashCommon.mix(key);
-        }
+            int chunkSectionOffset = (pos.getY() >> 4) * sectionSize;
 
-        private static boolean isBitSet(long bits, int position) {
-            return (bits & (1 << position)) != 0L;
-        }
-
-        private static int offsetKey(BlockPos unitOffset) {
-            return unitOffset.getY() << 4 | unitOffset.getZ() << 2 | unitOffset.getX();
-        }
-
-        private static long unsetBitAt(long packedBits, int offsetKey) {
-            return packedBits & ~(1 << offsetKey);
-        }
-
-        long get(BlockPos lavaPos) {
-            long key = lavaPos.asLong();
-            int idx = hash(key) & this.mask;
-
-            if (this.keys[idx] == key) {
-                // Cache hit, return cached value
-                return this.values[idx];
+            int offset = chunkSectionOffset + idx;
+            if (this.keys[offset] == key) {
+                // cache hit
+                return this.values.get(offset);
             }
 
-            // Store values in cache
-            this.keys[idx] = key;
-            this.values[idx] = Long.MAX_VALUE;
+            this.keys[offset] = key;
+            this.values.set(offset, true);
 
-            return Long.MAX_VALUE;
+            return true;
         }
 
-        boolean checkOffsetBurnable(BlockPos lavaPos, BlockPos offset) {
-            BlockPos unitOffset = getUnitOffset(lavaPos, offset);
+        public void setBlockCannotBurn(BlockPos pos) {
+            short key = getKey(pos);
+            int idx = HashCommon.mix(key) & this.mask;
 
-            long packedBits = get(lavaPos);
-            return isBitSet(packedBits, offsetKey(unitOffset));
+            int chunkSectionOffset = (pos.getY() >> 4) * sectionSize;
+
+            int offset = chunkSectionOffset + idx;
+
+            this.keys[offset] = key;
+
+            this.values.set(offset, false);
         }
 
-        void setBlockNotBurnable(BlockPos lavaPos, BlockPos offset) {
-            // TODO: only compute idx once
-            long key = lavaPos.asLong();
-            int idx = hash(key) & this.mask;
+        public void clearSection(int sectionIdx) {
+            int sectionOffset = sectionIdx * sectionSize;
 
-            BlockPos unitOffset = getUnitOffset(lavaPos, offset);
-
-            long packedBits = get(lavaPos);
-
-            this.values[idx] = unsetBitAt(packedBits, offsetKey(unitOffset));
+            Arrays.fill(this.keys, sectionOffset, sectionOffset + sectionSize - 1, Short.MAX_VALUE);
+            this.values.set(sectionOffset, sectionOffset + sectionSize - 1);
         }
 
-        void clear() {
-            Arrays.fill(this.keys, Long.MIN_VALUE);
-            Arrays.fill(this.values, Long.MAX_VALUE);
+        // first convert the x,y,z coords to a chunksection pos [0,15]
+        // 4 bits for x,y,z each
+        // resulting max value is 2^12, so we convert it to short to save up on mem
+        private static short getKey(BlockPos pos) {
+            int posX = pos.getX();
+            int posY = pos.getY();
+            int posZ = pos.getZ();
+
+            int sectionX = posX - (posX >> 4) * 16;
+            int sectionY = posY - (posY >> 4) * 16;
+            int sectionZ = posZ - (posZ >> 4) * 16;
+
+            return (short) (sectionY << 8 | sectionX << 4 | sectionZ);
         }
     }
 }
